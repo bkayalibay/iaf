@@ -1,0 +1,5 @@
+# Training:
+python tf_train.py --logdir log --hpconfig depth=1,num_blocks=20,kl_min=0.1,learning_rate=0.002,batch_size=32,data_prior='logistic',use_iaf=True,max_iters=500 --num_gpus 1 --mode train
+
+# Evaluation:
+python tf_train.py --logdir log --hpconfig depth=1,num_blocks=20,kl_min=0.1,learning_rate=0.002,batch_size=32,data_prior='logistic',use_iaf=True,max_iters=500 --num_gpus 1 --mode eval_test

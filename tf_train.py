@@ -131,7 +131,7 @@ def get_default_hparams():
 
 class CVAE1(object):
     def __init__(self, hps, mode, x=None):
-        assert(hps.data_prior in ['logistic', 'gaussian'], 'Unknown data prior %s' % hps.data_prior)
+        assert hps.data_prior in ['logistic', 'gaussian'], 'Unknown data prior %s' % hps.data_prior
         self.hps = hps
         self.mode = mode
         input_shape = [hps.batch_size * hps.num_gpus, 3, hps.image_size, hps.image_size]
