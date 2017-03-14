@@ -182,8 +182,10 @@ class CVAE1(object):
         x = tf.to_float(x)
         if hps.data_prior == 'logistic':
             x = tf.clip_by_value((x + 0.5) / 256.0, 0.0, 1.0) - 0.5
+        elif hps.data_prior == 'gaussian':
+            x = tf.clip_by_value((x + 0.5) / 256.0, 0.0, 1.0)
         else:
-            x = tf.clip_by_value(x / 255.0, 0.0, 1.0)
+            raise ValueError('Unknown data prior: ', hps.data_prior)
 
         # Input images are repeated k times on the input.
         # This is used for Importance Sampling loss (k is number of samples).
