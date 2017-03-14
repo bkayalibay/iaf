@@ -219,7 +219,7 @@ class NotBuggySupervisor(tf.train.Supervisor):
                     sess.run(self.init_op, feed_dict=self._init_feed_dict)
                 if self._init_fn:
                     self._init_fn(sess)
-                not_ready = self._session_manager._model_not_ready(sess)
+                not_ready = not self._session_manager._model_ready(sess)
                 if not_ready:
                     raise RuntimeError("Init operations did not make model ready.  "
                                        "Init op: %s, init fn: %s, error: %s"

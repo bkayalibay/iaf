@@ -7,7 +7,8 @@ from tf_utils.hparams import HParams
 from tf_utils.common import img_stretch, img_tile
 from tf_utils.common import assign_to_gpu, split, CheckpointLoader, average_grads, NotBuggySupervisor
 from tf_utils.layers import conv2d, deconv2d, ar_multiconv2d, resize_nearest_neighbor
-from tf_utils.distributions import DiagonalGaussian, discretized_logistic, compute_lowerbound, repeat
+from tf_utils.distributions import DiagonalGaussian, discretized_logistic, compute_lowerbound, repeat, \
+                                    gaussian_diag_logps
 from tf_utils.data_utils import get_inputs, get_images
 import tqdm
 
@@ -28,14 +29,19 @@ class IAFLayer(object):
 
     def up(self, input, **_):
         hps = self.hps
+        use_iaf = hps.use_iaf
         h_size = hps.h_size
         z_size = hps.z_size
         stride = [2, 2] if self.downsample else [1, 1]
 
         with arg_scope([conv2d]):
             x = tf.nn.elu(input)
-            x = conv2d("up_conv1", x, 2 * z_size + 2 * h_size, stride=stride)
-            self.qz_mean, self.qz_logsd, self.up_context, h = split(x, 1, [z_size, z_size, h_size, h_size])
+            if use_iaf:
+                x = conv2d("up_conv1", x, 2 * z_size + 2 * h_size, stride=stride)
+                self.qz_mean, self.qz_logsd, self.up_context, h = split(x, 1, [z_size, z_size, h_size, h_size])
+            else:
+                x = conv2d("up_conv1", x, 2 * z_size + h_size, stride=stride)
+                self.qz_mean, self.qz_logsd, h = split(x, 1, [z_size, z_size, h_size])
 
             h = tf.nn.elu(h)
             h = conv2d("up_conv3", h, h_size)
@@ -45,17 +51,24 @@ class IAFLayer(object):
 
     def down(self, input):
         hps = self.hps
+        use_iaf = self.hps.use_iaf
         h_size = hps.h_size
         z_size = hps.z_size
 
         with arg_scope([conv2d, ar_multiconv2d]):
             x = tf.nn.elu(input)
-            x = conv2d("down_conv1", x, 4 * z_size + h_size * 2)
-            pz_mean, pz_logsd, rz_mean, rz_logsd, down_context, h_det = split(x, 1, [z_size] * 4 + [h_size] * 2)
+            if use_iaf:
+                x = conv2d("down_conv1", x, 4 * z_size + h_size * 2)
+                pz_mean, pz_logsd, rz_mean, rz_logsd, down_context, h_det = split(x, 1, [z_size] * 4 + [h_size] * 2)
+            else:
+                x = conv2d("down_conv1", x, 4 * z_size + h_size)
+                pz_mean, pz_logsd, rz_mean, rz_logsd, h_det = split(x, 1, [z_size] * 4 + [h_size])
 
             prior = DiagonalGaussian(pz_mean, 2 * pz_logsd)
             posterior = DiagonalGaussian(rz_mean + self.qz_mean, 2 * (rz_logsd + self.qz_logsd))
-            context = self.up_context + down_context
+
+            if use_iaf:
+                context = self.up_context + down_context
 
             if self.mode in ["init", "sample"]:
                 z = prior.sample
@@ -66,10 +79,11 @@ class IAFLayer(object):
                 kl_cost = kl_obj = tf.zeros([hps.batch_size * hps.k])
             else:
                 logqs = posterior.logps(z)
-                x = ar_multiconv2d("ar_multiconv2d", z, context, [h_size, h_size], [z_size, z_size])
-                arw_mean, arw_logsd = x[0] * 0.1, x[1] * 0.1
-                z = (z - arw_mean) / tf.exp(arw_logsd)
-                logqs += arw_logsd
+                if use_iaf:
+                    x = ar_multiconv2d("ar_multiconv2d", z, context, [h_size, h_size], [z_size, z_size])
+                    arw_mean, arw_logsd = x[0] * 0.1, x[1] * 0.1
+                    z = (z - arw_mean) / tf.exp(arw_logsd)
+                    logqs += arw_logsd
                 logps = prior.logps(z)
 
                 kl_cost = logqs - logps
@@ -97,23 +111,27 @@ class IAFLayer(object):
 
 def get_default_hparams():
     return HParams(
-        batch_size=16,        # Batch size on one GPU.
-        eval_batch_size=100,  # Batch size for evaluation.
-        num_gpus=8,           # Number of GPUs (effectively increases batch size).
-        learning_rate=0.01,   # Learning rate.
-        z_size=32,            # Size of z variables.
-        h_size=160,           # Size of resnet block.
-        kl_min=0.25,          # Number of "free bits/nats".
-        depth=2,              # Number of downsampling blocks.
-        num_blocks=2,         # Number of resnet blocks for each downsampling layer.
-        k=1,                  # Number of samples for IS objective.
-        dataset="cifar10",    # Dataset name.
-        image_size=32,        # Image size.
+        batch_size=16,         # Batch size on one GPU.
+        eval_batch_size=100,   # Batch size for evaluation.
+        num_gpus=8,            # Number of GPUs (effectively increases batch size).
+        learning_rate=0.01,    # Learning rate.
+        z_size=32,             # Size of z variables.
+        h_size=160,            # Size of resnet block.
+        kl_min=0.25,           # Number of "free bits/nats".
+        depth=2,               # Number of downsampling blocks.
+        num_blocks=2,          # Number of resnet blocks for each downsampling layer.
+        k=1,                   # Number of samples for IS objective.
+        dataset="cifar10",     # Dataset name.
+        image_size=32,         # Image size.
+        data_prior='logistic', # Prior distribution of data (gaussian vs. logistic)
+        use_iaf=True,          # IAF vs. simple Diagonal Gaussian
+        max_iters=None         # When to stop training
     )
 
 
 class CVAE1(object):
     def __init__(self, hps, mode, x=None):
+        assert(hps.data_prior in ['logistic', 'gaussian'], 'Unknown data prior %s' % hps.data_prior)
         self.hps = hps
         self.mode = mode
         input_shape = [hps.batch_size * hps.num_gpus, 3, hps.image_size, hps.image_size]
@@ -162,7 +180,10 @@ class CVAE1(object):
         hps = self.hps
 
         x = tf.to_float(x)
-        x = tf.clip_by_value((x + 0.5) / 256.0, 0.0, 1.0) - 0.5
+        if hps.data_prior == 'logistic':
+            x = tf.clip_by_value((x + 0.5) / 256.0, 0.0, 1.0) - 0.5
+        else:
+            x = tf.clip_by_value(x / 255.0, 0.0, 1.0)
 
         # Input images are repeated k times on the input.
         # This is used for Importance Sampling loss (k is number of samples).
@@ -205,9 +226,16 @@ class CVAE1(object):
 
             x = tf.nn.elu(h)
             x = deconv2d("x_dec", x, 3, [5, 5])
-            x = tf.clip_by_value(x, -0.5 + 1 / 512., 0.5 - 1 / 512.)
+            if hps.data_prior == 'logistic':
+                x = tf.clip_by_value(x, -0.5 + 1 / 512., 0.5 - 1 / 512.)
+            else:
+                x = tf.nn.sigmoid(x)
 
-        log_pxz = discretized_logistic(x, self.dec_log_stdv, sample=orig_x)
+        if hps.data_prior == 'logistic':
+            log_pxz = discretized_logistic(x, self.dec_log_stdv, sample=orig_x)
+        else:
+            log_pxz = gaussian_diag_logps(x, self.dec_log_stdv, sample=orig_x)
+
         obj = tf.reduce_sum(kl_obj - log_pxz)
 
         if self.mode == "train" and gpu == hps.num_gpus - 1:
@@ -261,6 +289,8 @@ def run(hps):
     local_step = 0
     begin = time.time()
 
+    max_iters = hps.max_iters
+
     config = tf.ConfigProto(allow_soft_placement=True)
     with sv.managed_session(config=config) as sess:
         print("Running first iteration!")
@@ -285,6 +315,10 @@ def run(hps):
                 break
             if local_step % 100 == 0:
                 saver.save(sess, sv.save_path, global_step=sv.global_step, write_meta_graph=False)
+
+            if max_iters is not None:
+                if local_step == max_iters:
+                    sv.request_stop()
 
             local_step += 1
         sv.stop()
