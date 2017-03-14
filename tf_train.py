@@ -231,7 +231,7 @@ class CVAE1(object):
             if hps.data_prior == 'logistic':
                 x = tf.clip_by_value(x, -0.5 + 1 / 512., 0.5 - 1 / 512.)
             else:
-                x = tf.clip_by_value(x, 1 / 512., 1 - 1 / 512.)
+                x = tf.clip_by_value(tf.nn.sigmoid(x), 1 / 512., 1 - 1 / 512.)
 
         if hps.data_prior == 'logistic':
             log_pxz = discretized_logistic(x, self.dec_log_stdv, sample=orig_x)
