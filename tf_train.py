@@ -125,7 +125,7 @@ def get_default_hparams():
         image_size=32,         # Image size.
         data_prior='logistic', # Prior distribution of data (gaussian vs. logistic)
         use_iaf=True,          # IAF vs. simple Diagonal Gaussian
-        max_iters=None         # When to stop training
+        max_iters=100          # When to stop training
     )
 
 
@@ -319,7 +319,7 @@ def run(hps):
                 saver.save(sess, sv.save_path, global_step=sv.global_step, write_meta_graph=False)
 
             if max_iters is not None:
-                if local_step == max_iters:
+                if local_step >= max_iters:
                     sv.request_stop()
 
             local_step += 1
