@@ -237,6 +237,7 @@ class CVAE1(object):
             log_pxz = discretized_logistic(x, self.dec_log_stdv, sample=orig_x)
         else:
             log_pxz = gaussian_diag_logps(x, self.dec_log_stdv, sample=orig_x)
+            log_pxz = tf.reduce_sum(log_pxz, [1, 2, 3])
 
         obj = tf.reduce_sum(kl_obj - log_pxz)
 
